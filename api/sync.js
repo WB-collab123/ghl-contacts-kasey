@@ -10,6 +10,15 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const b64u = (b) => Buffer.from(b).toString('base64url');
 
 // Tolerates quotes, literal \n, spaces instead of newlines, or a whole pasted JSON line.
+function keyDiagnosis(key) {
+  const body = key.replace(/-----[A-Z ]+-----|\s/g, '');
+  const der = Buffer.from(body, 'base64');
+  let expected = '?';
+  if (der[0] === 0x30 && der[1] === 0x82) expected = 4 + der.readUInt16BE(2);
+  else if (der[0] === 0x30 && der[1] === 0x81) expected = 3 + der[2];
+  return `body ${body.length} chars, starts "${body.slice(0, 4)}", decoded ${der.length} bytes, expected ${expected}`;
+}
+
 function normalizeKey(raw) {
   let s = String(raw || '').trim();
   const m = s.match(/-----BEGIN ([A-Z ]*PRIVATE KEY)-----([\s\S]*?)-----END \1-----/);
@@ -28,7 +37,7 @@ async function googleToken() {
     aud: 'https://oauth2.googleapis.com/token', iat: now, exp: now + 3600,
   }));
   let sig;
-  try { sig = crypto.createSign('RSA-SHA256').update(`${head}.${claim}`).sign(key, 'base64url'); } catch (e) { throw new Error(`GOOGLE_PRIVATE_KEY could not be read (${e.message}); key looks truncated or altered. Length ${key.length}. Paste it again in full.`); }
+  try { sig = crypto.createSign('RSA-SHA256').update(`${head}.${claim}`).sign(key, 'base64url'); } catch (e) { throw new Error(`GOOGLE_PRIVATE_KEY could not be read (${e.message}); key looks truncated or altered. ${keyDiagnosis(key)}. Paste it again in full.`); }
   const res = await fetch('https://oauth2.googleapis.com/token', {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
