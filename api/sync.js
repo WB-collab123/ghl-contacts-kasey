@@ -24,7 +24,14 @@ function normalizeKey(raw) {
   const m = s.match(/-----BEGIN ([A-Z ]*PRIVATE KEY)-----([\s\S]*?)-----END \1-----/);
   if (!m) throw new Error(`GOOGLE_PRIVATE_KEY is not a private key (length ${s.length}, starts "${s.slice(0, 12)}"). Paste the private_key value from the JSON file, BEGIN to END lines.`);
   const body = m[2].replace(/\\n/g, '').replace(/[^A-Za-z0-9+/=]/g, '');
-  return `-----BEGIN ${m[1]}-----\n${body.match(/.{1,64}/g).join('\n')}\n-----END ${m[1]}-----\n`;
+  // Self-heal stray trailing characters: cut the DER bytes to the length the key itself declares.
+  let der = Buffer.from(body, 'base64');
+  let want = 0;
+  if (der[0] === 0x30 && der[1] === 0x82) want = 4 + der.readUInt16BE(2);
+  else if (der[0] === 0x30 && der[1] === 0x81) want = 3 + der[2];
+  if (want && der.length > want) der = der.subarray(0, want);
+  const clean = der.toString('base64');
+  return `-----BEGIN ${m[1]}-----\n${clean.match(/.{1,64}/g).join('\n')}\n-----END ${m[1]}-----\n`;
 }
 
 async function googleToken() {
