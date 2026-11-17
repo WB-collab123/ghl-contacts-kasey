@@ -13,7 +13,7 @@ const b64u = (b) => Buffer.from(b).toString('base64url');
 function normalizeKey(raw) {
   let s = String(raw || '').trim();
   const m = s.match(/-----BEGIN ([A-Z ]*PRIVATE KEY)-----([\s\S]*?)-----END \1-----/);
-  if (!m) return s;
+  if (!m) throw new Error(`GOOGLE_PRIVATE_KEY is not a private key (length ${s.length}, starts "${s.slice(0, 12)}"). Paste the private_key value from the JSON file, BEGIN to END lines.`);
   const body = m[2].replace(/\\n/g, '').replace(/[^A-Za-z0-9+/=]/g, '');
   return `-----BEGIN ${m[1]}-----\n${body.match(/.{1,64}/g).join('\n')}\n-----END ${m[1]}-----\n`;
 }
@@ -27,7 +27,8 @@ async function googleToken() {
     iss: email, scope: 'https://www.googleapis.com/auth/spreadsheets',
     aud: 'https://oauth2.googleapis.com/token', iat: now, exp: now + 3600,
   }));
-  const sig = crypto.createSign('RSA-SHA256').update(`${head}.${claim}`).sign(key, 'base64url');
+  let sig;
+  try { sig = crypto.createSign('RSA-SHA256').update(`${head}.${claim}`).sign(key, 'base64url'); } catch (e) { throw new Error(`GOOGLE_PRIVATE_KEY could not be read (${e.message}); key looks truncated or altered. Length ${key.length}. Paste it again in full.`); }
   const res = await fetch('https://oauth2.googleapis.com/token', {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
