@@ -35,8 +35,15 @@ function normalizeKey(raw) {
 }
 
 async function googleToken() {
-  const email = process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL;
-  const key = normalizeKey(process.env.GOOGLE_PRIVATE_KEY);
+  let email = process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL;
+  let rawKey = process.env.GOOGLE_PRIVATE_KEY;
+  if (process.env.GOOGLE_CREDENTIALS_B64) {   // preferred: whole JSON key file, base64-encoded
+    let cred;
+    try { cred = JSON.parse(Buffer.from(process.env.GOOGLE_CREDENTIALS_B64.trim(), 'base64').toString('utf8')); }
+    catch (e) { throw new Error('GOOGLE_CREDENTIALS_B64 is not valid base64 of the JSON key file'); }
+    email = cred.client_email; rawKey = cred.private_key;
+  }
+  const key = normalizeKey(rawKey);
   const now = Math.floor(Date.now() / 1000);
   const head = b64u(JSON.stringify({ alg: 'RS256', typ: 'JWT' }));
   const claim = b64u(JSON.stringify({
