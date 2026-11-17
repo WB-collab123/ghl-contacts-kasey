@@ -9,9 +9,18 @@ const CONCURRENCY = 4;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const b64u = (b) => Buffer.from(b).toString('base64url');
 
+// Tolerates quotes, literal \n, spaces instead of newlines, or a whole pasted JSON line.
+function normalizeKey(raw) {
+  let s = String(raw || '').trim();
+  const m = s.match(/-----BEGIN ([A-Z ]*PRIVATE KEY)-----([\s\S]*?)-----END \1-----/);
+  if (!m) return s;
+  const body = m[2].replace(/\\n/g, '').replace(/[^A-Za-z0-9+/=]/g, '');
+  return `-----BEGIN ${m[1]}-----\n${body.match(/.{1,64}/g).join('\n')}\n-----END ${m[1]}-----\n`;
+}
+
 async function googleToken() {
   const email = process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL;
-  const key = (process.env.GOOGLE_PRIVATE_KEY || '').replace(/\\n/g, '\n');
+  const key = normalizeKey(process.env.GOOGLE_PRIVATE_KEY);
   const now = Math.floor(Date.now() / 1000);
   const head = b64u(JSON.stringify({ alg: 'RS256', typ: 'JWT' }));
   const claim = b64u(JSON.stringify({
