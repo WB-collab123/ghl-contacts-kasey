@@ -1,5 +1,6 @@
 
 'use strict';
+
 const crypto = require('crypto');
 const { classifyRows } = require('../lib/core');
 
@@ -7,83 +8,160 @@ const GHL = 'https://services.leadconnectorhq.com';
 const TIME_BUDGET_MS = 240000;
 const MIN_GAP_MS = 120;
 const CONCURRENCY = 4;
+
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const b64u = (b) => Buffer.from(b).toString('base64url');
 
-// Tolerates quotes, literal \n, spaces instead of newlines, or a whole pasted JSON line.
+// Tolerates quotes, literal \n, spaces instead of newlines,
+// or a whole pasted JSON line.
 function keyDiagnosis(key) {
   const body = key.replace(/-----[A-Z ]+-----|\s/g, '');
   const der = Buffer.from(body, 'base64');
+
   let expected = '?';
-  if (der[0] === 0x30 && der[1] === 0x82) expected = 4 + der.readUInt16BE(2);
-  else if (der[0] === 0x30 && der[1] === 0x81) expected = 3 + der[2];
+
+  if (der[0] === 0x30 && der[1] === 0x82) {
+    expected = 4 + der.readUInt16BE(2);
+  } else if (der[0] === 0x30 && der[1] === 0x81) {
+    expected = 3 + der[2];
+  }
+
   return `body ${body.length} chars, starts "${body.slice(0, 4)}", decoded ${der.length} bytes, expected ${expected}`;
 }
 
 function normalizeKey(raw) {
   let s = String(raw || '').trim();
-  const m = s.match(/-----BEGIN ([A-Z ]*PRIVATE KEY)-----([\s\S]*?)-----END \1-----/);
-  if (!m) throw new Error(`GOOGLE_PRIVATE_KEY is not a private key (length ${s.length}, starts "${s.slice(0, 12)}"). Paste the private_key value from the JSON file, BEGIN to END lines.`);
-  const body = m[2].replace(/\\n/g, '').replace(/[^A-Za-z0-9+/=]/g, '');
-  // Self-heal stray trailing characters: cut the DER bytes to the length the key itself declares.
+
+  const m = s.match(
+    /-----BEGIN ([A-Z ]*PRIVATE KEY)-----([\s\S]*?)-----END \1-----/
+  );
+
+  if (!m) {
+    throw new Error(
+      `GOOGLE_PRIVATE_KEY is not a private key (length ${s.length}, starts "${s.slice(0, 12)}"). Paste the private_key value from the JSON file, BEGIN to END lines.`
+    );
+  }
+
+  const body = m[2]
+    .replace(/\\n/g, '')
+    .replace(/[^A-Za-z0-9+/=]/g, '');
+
+  // Self-heal stray trailing characters.
   let der = Buffer.from(body, 'base64');
   let want = 0;
-  if (der[0] === 0x30 && der[1] === 0x82) want = 4 + der.readUInt16BE(2);
-  else if (der[0] === 0x30 && der[1] === 0x81) want = 3 + der[2];
-  if (want && der.length > want) der = der.subarray(0, want);
+
+  if (der[0] === 0x30 && der[1] === 0x82) {
+    want = 4 + der.readUInt16BE(2);
+  } else if (der[0] === 0x30 && der[1] === 0x81) {
+    want = 3 + der[2];
+  }
+
+  if (want && der.length > want) {
+    der = der.subarray(0, want);
+  }
+
   const clean = der.toString('base64');
+
   return `-----BEGIN ${m[1]}-----\n${clean.match(/.{1,64}/g).join('\n')}\n-----END ${m[1]}-----\n`;
 }
 
 async function googleToken() {
   let email = process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL;
   let rawKey = process.env.GOOGLE_PRIVATE_KEY;
+
   if (process.env.GOOGLE_CREDENTIALS_B64) {
     let cred;
+
     try {
-      cred = JSON.parse(Buffer.from(process.env.GOOGLE_CREDENTIALS_B64.trim(), 'base64').toString('utf8'));
+      cred = JSON.parse(
+        Buffer.from(
+          process.env.GOOGLE_CREDENTIALS_B64.trim(),
+          'base64'
+        ).toString('utf8')
+      );
     } catch (e) {
-      throw new Error('GOOGLE_CREDENTIALS_B64 is not valid base64 of the JSON key file');
+      throw new Error(
+        'GOOGLE_CREDENTIALS_B64 is not valid base64 of the JSON key file'
+      );
     }
+
     email = cred.client_email;
     rawKey = cred.private_key;
   }
+
   const key = normalizeKey(rawKey);
   const now = Math.floor(Date.now() / 1000);
-  const head = b64u(JSON.stringify({ alg: 'RS256', typ: 'JWT' }));
-  const claim = b64u(JSON.stringify({
-    iss: email,
-    scope: 'https://www.googleapis.com/auth/spreadsheets',
-    aud: 'https://oauth2.googleapis.com/token',
-    iat: now,
-    exp: now + 3600,
-  }));
+
+  const head = b64u(
+    JSON.stringify({ alg: 'RS256', typ: 'JWT' })
+  );
+
+  const claim = b64u(
+    JSON.stringify({
+      iss: email,
+      scope: 'https://www.googleapis.com/auth/spreadsheets',
+      aud: 'https://oauth2.googleapis.com/token',
+      iat: now,
+      exp: now + 3600,
+    })
+  );
+
   let sig;
+
   try {
-    sig = crypto.createSign('RSA-SHA256').update(`${head}.${claim}`).sign(key, 'base64url');
+    sig = crypto
+      .createSign('RSA-SHA256')
+      .update(`${head}.${claim}`)
+      .sign(key, 'base64url');
   } catch (e) {
-    throw new Error(`GOOGLE_PRIVATE_KEY could not be read (${e.message}); key looks truncated or altered. ${keyDiagnosis(key)}. Paste it again in full.`);
+    throw new Error(
+      `GOOGLE_PRIVATE_KEY could not be read (${e.message}); key looks truncated or altered. ${keyDiagnosis(key)}. Paste it again in full.`
+    );
   }
-  const res = await fetch('https://oauth2.googleapis.com/token', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({
-      grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer',
-      assertion: `${head}.${claim}.${sig}`,
-    }),
-  });
+
+  const res = await fetch(
+    'https://oauth2.googleapis.com/token',
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+      },
+      body: new URLSearchParams({
+        grant_type:
+          'urn:ietf:params:oauth:grant-type:jwt-bearer',
+        assertion: `${head}.${claim}.${sig}`,
+      }),
+    }
+  );
+
   const j = await res.json();
-  if (!res.ok || !j.access_token) throw new Error(`Google auth failed: ${JSON.stringify(j)}`);
+
+  if (!res.ok || !j.access_token) {
+    throw new Error(`Google auth failed: ${JSON.stringify(j)}`);
+  }
+
   return j.access_token;
 }
 
 async function readSheet(token, sheetId, tab) {
   const range = encodeURIComponent(`'${tab}'!A2:E`);
-  const url = `https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/${range}` +
+
+  const url =
+    `https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/${range}` +
     `?valueRenderOption=UNFORMATTED_VALUE&dateTimeRenderOption=SERIAL_NUMBER`;
-  const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+
+  const res = await fetch(url, {
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+  });
+
   const j = await res.json();
-  if (!res.ok) throw new Error(`Sheet read failed: ${JSON.stringify(j)}`);
+
+  if (!res.ok) {
+    throw new Error(`Sheet read failed: ${JSON.stringify(j)}`);
+  }
+
   return j.values || [];
 }
 
@@ -93,23 +171,41 @@ async function writeSheet(token, sheetId, tab, updates) {
       range: `'${tab}'!C${u.row}:E${u.row}`,
       values: [u.values],
     }));
-    const res = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values:batchUpdate`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${token}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ valueInputOption: 'RAW', data }),
-    });
-    if (!res.ok) throw new Error(`Sheet write failed: ${await res.text()}`);
+
+    const res = await fetch(
+      `https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values:batchUpdate`,
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          valueInputOption: 'RAW',
+          data,
+        }),
+      }
+    );
+
+    if (!res.ok) {
+      throw new Error(`Sheet write failed: ${await res.text()}`);
+    }
   }
 }
 
 let lastStart = 0;
+
 async function paced() {
-  const wait = Math.max(0, lastStart + MIN_GAP_MS - Date.now());
+  const wait = Math.max(
+    0,
+    lastStart + MIN_GAP_MS - Date.now()
+  );
+
   lastStart = Date.now() + wait;
-  if (wait) await sleep(wait);
+
+  if (wait) {
+    await sleep(wait);
+  }
 }
 
 async function upsert(item) {
@@ -128,9 +224,9 @@ async function upsert(item) {
         locationId: process.env.GHL_LOCATION_ID,
         email: item.email,
 
-        // Convert YYYY-MM-DD to MM-DD-YYYY
+        // DOB format: MM-DD-YYYY
         dateOfBirth: (() => {
-          const [year, month, day] = item.iso.split('-');
+          const [month, day, year] = item.iso.split('-');
           return `${month}-${day}-${year}`;
         })(),
 
@@ -145,6 +241,7 @@ async function upsert(item) {
     }
 
     const j = await res.json().catch(() => ({}));
+
     if (!res.ok) {
       return {
         ok: false,
@@ -152,25 +249,38 @@ async function upsert(item) {
       };
     }
 
-    return { ok: true, created: j.new === true };
+    return {
+      ok: true,
+      created: j.new === true,
+    };
   }
 
-  return { ok: false, msg: 'Error: GHL busy (retry tomorrow)' };
+  return {
+    ok: false,
+    msg: 'Error: GHL busy (retry tomorrow)',
+  };
 }
 
 module.exports = async function handler(req, res) {
   const url = new URL(req.url, 'http://x');
+
   const secret = process.env.CRON_SECRET;
-  const provided = (req.headers.authorization || '').replace(/^Bearer /, '') ||
+
+  const provided =
+    (req.headers.authorization || '').replace(/^Bearer /, '') ||
     url.searchParams.get('key');
 
   if (!secret || provided !== secret) {
-    return res.status(401).json({ error: 'unauthorized' });
+    return res.status(401).json({
+      error: 'unauthorized',
+    });
   }
 
   const started = Date.now();
+
   const dry = url.searchParams.get('dry') === '1';
   const limit = parseInt(url.searchParams.get('limit') || '0', 10);
+
   const tab = process.env.SHEET_TAB || 'Sheet1';
   const sheetId = process.env.SHEET_ID;
 
@@ -189,6 +299,7 @@ module.exports = async function handler(req, res) {
 
   try {
     token = await googleToken();
+
     const rows = await readSheet(token, sheetId, tab);
     const plan = classifyRows(rows);
     const todo = [];
@@ -198,9 +309,14 @@ module.exports = async function handler(req, res) {
         out.unchanged++;
       } else if (p.action === 'skip') {
         out.skipped++;
+
         const existing = rows[p.row - 2][2];
+
         if (existing !== p.status) {
-          updates.push({ row: p.row, values: [p.status, '', ''] });
+          updates.push({
+            row: p.row,
+            values: [p.status, '', ''],
+          });
         }
       } else if (p.action === 'sync') {
         todo.push(p);
@@ -208,6 +324,7 @@ module.exports = async function handler(req, res) {
     }
 
     const batch = limit > 0 ? todo.slice(0, limit) : todo;
+
     out.pending = todo.length;
 
     if (dry) {
@@ -216,45 +333,67 @@ module.exports = async function handler(req, res) {
         email: p.email,
         dob: p.iso,
       }));
+
       return res.status(200).json(out);
     }
 
     let idx = 0;
 
     const worker = async () => {
-      while (idx < batch.length && Date.now() - started < TIME_BUDGET_MS) {
+      while (
+        idx < batch.length &&
+        Date.now() - started < TIME_BUDGET_MS
+      ) {
         const p = batch[idx++];
+
         const r = await upsert(p);
         const stamp = new Date().toISOString();
 
         if (r.ok) {
           r.created ? out.created++ : out.updated++;
+
           updates.push({
             row: p.row,
-            values: [r.created ? 'Created' : 'Updated', p.key, stamp],
+            values: [
+              r.created ? 'Created' : 'Updated',
+              p.key,
+              stamp,
+            ],
           });
         } else {
           out.errors++;
+
           updates.push({
             row: p.row,
-            values: [r.msg, '', stamp],
+            values: [
+              r.msg,
+              '',
+              stamp,
+            ],
           });
         }
       }
     };
 
-    await Promise.all(Array.from({ length: CONCURRENCY }, worker));
+    await Promise.all(
+      Array.from(
+        { length: CONCURRENCY },
+        worker
+      )
+    );
 
     out.remaining = todo.length - idx;
 
     await writeSheet(token, sheetId, tab, updates);
 
-    out.secondsUsed = Math.round((Date.now() - started) / 1000);
+    out.secondsUsed = Math.round(
+      (Date.now() - started) / 1000
+    );
 
     return res.status(200).json(out);
 
   } catch (e) {
-    // Still try to save progress made so far
+    // Still try to save progress made so far.
     try {
       if (token && updates.length && !dry) {
         await writeSheet(token, sheetId, tab, updates);
